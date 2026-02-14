@@ -1,0 +1,44 @@
+<linkset>
+  <html:link rel="localization" href="__addonRef__-preferences.ftl" />
+</linkset>
+
+<groupbox onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window });">
+  <label>
+    <html:h2 data-l10n-id="pref-title"></html:h2>
+  </label>
+
+  <hbox align="center">
+    <label control="pref-__addonRef__-apiKey" data-l10n-id="pref-apiKey-label"></label>
+    <html:input type="password" id="pref-__addonRef__-apiKey" placeholder="sk-..." size="40" />
+  </hbox>
+
+  <hbox align="center">
+    <label control="pref-__addonRef__-apiEndpoint" data-l10n-id="pref-apiEndpoint-label"></label>
+    <html:input type="text" id="pref-__addonRef__-apiEndpoint" size="60" />
+  </hbox>
+
+  <hbox align="center">
+    <label control="pref-__addonRef__-modelName" data-l10n-id="pref-modelName-label"></label>
+    <html:input type="text" id="pref-__addonRef__-modelName" size="40" />
+  </hbox>
+
+  <hbox align="center">
+    <label control="pref-__addonRef__-temperature" data-l10n-id="pref-temperature-label"></label>
+    <html:input type="number" id="pref-__addonRef__-temperature" min="0" max="2" step="0.1" size="8" />
+  </hbox>
+
+  <hbox align="start">
+    <label control="pref-__addonRef__-systemPrompt" data-l10n-id="pref-systemPrompt-label"></label>
+    <html:textarea id="pref-__addonRef__-systemPrompt" rows="4" cols="60"></html:textarea>
+  </hbox>
+
+  <hbox align="center" style="margin-top: 8px;">
+    <button id="paperchat-save-config" data-l10n-id="pref-save-button" />
+    <html:div id="paperchat-save-status" class="paperchat-pref-status"></html:div>
+  </hbox>
+</groupbox>
+
+<vbox>
+  <html:label data-l10n-id="pref-help"
+    data-l10n-args='{"time": "__buildTime__","name": "__addonName__","version":"__buildVersion__"}'></html:label>
+</vbox>

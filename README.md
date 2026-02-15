@@ -1,8 +1,8 @@
 # zotero-PaperChat
 
-PaperChat is a clean AI sidebar plugin for Zotero (7 and 8).
+PaperChat is a clean AI sidebar plugin for Zotero (only tested in Zotero 8).
 
-## Features (v0.1)
+## Features
 
 - Sidebar chat UI in reader context
 - Preferences-based API setup
@@ -42,6 +42,20 @@ Open Zotero Preferences -> PaperChat, then set:
   - When over budget, lower-priority documents are compressed/truncated first
 - Invalid or removed PDFs are auto-pruned from context during request building
 - Context selection is stored per conversation
+
+## Preview
+
+1. Library and sidebar overview
+
+![Library and sidebar overview](img/test1.jpg)
+
+2. Text selection and multi-PDF context support
+
+![Text selection and multi-PDF context support](img/test2.png)
+
+3. PDF chat result
+
+![PDF chat result](img/test3.jpg)
 
 ## Build
 

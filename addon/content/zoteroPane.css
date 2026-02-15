@@ -1,7 +1,9 @@
 .paperchat-shell {
+  --paperchat-dialog-max-height: 380px;
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -17,6 +19,21 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #dbe4f2;
+  box-shadow: 0 2px 8px rgba(20, 36, 66, 0.06);
+  box-sizing: border-box;
+}
+
+.paperchat-context-panel {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   width: 100%;
   min-width: 0;
@@ -29,12 +46,73 @@
   box-sizing: border-box;
 }
 
+.paperchat-context-preview {
+  display: flex;
+  align-items: flex-start;
+  align-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 72px;
+  max-height: 150px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: 12px;
+  border: 1px solid #dbe4f2;
+  background: #ffffff;
+  color: #233354;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+.paperchat-context-preview-empty {
+  display: block;
+  color: #63779d;
+}
+
+.paperchat-context-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border-radius: 999px;
+  border: 1px solid #cdd8ee;
+  background: #f6f9ff;
+  color: #233354;
+  padding: 6px 10px;
+}
+
+.paperchat-context-badge-more {
+  background: #ecf2ff;
+  border-style: dashed;
+  font-weight: 700;
+}
+
+.paperchat-context-badge-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.paperchat-context-badge-text {
+  display: inline-block;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .paperchat-toolbox-row {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .paperchat-toolbox-label {
@@ -82,6 +160,10 @@
   box-sizing: border-box;
 }
 
+.paperchat-context-panel .paperchat-toolbox-btn-mini {
+  min-width: 52px;
+}
+
 .paperchat-toolbox-btn {
   flex: 0 1 80px;
   border: 1px solid #d0daf0;
@@ -91,6 +173,23 @@
   padding: 7px 10px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.paperchat-toolbox-btn-mini {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+}
+
+.paperchat-conversation-select {
+  flex: 1 1 140px;
+  min-width: 100px;
+  max-width: 100%;
+  border-radius: 10px;
+  border: 1px solid #cbd7ee;
+  padding: 7px 10px;
+  font-size: 12px;
+  background: #fff;
+  box-sizing: border-box;
 }
 
 .paperchat-toolbox-btn:hover {
@@ -113,8 +212,9 @@
 }
 
 .paperchat-messages {
-  flex: 1;
-  min-height: 120px;
+  flex: 0 1 auto;
+  min-height: 140px;
+  max-height: var(--paperchat-dialog-max-height);
   width: 100%;
   min-width: 0;
   max-width: 100%;
@@ -205,8 +305,10 @@
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  resize: vertical;
+  resize: none;
   min-height: 78px;
+  max-height: 180px;
+  overflow-y: auto;
   border-radius: 12px;
   border: 1px solid #cbd7ee;
   background: #ffffff;

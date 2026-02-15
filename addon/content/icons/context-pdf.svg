@@ -1,0 +1,8 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="80" y="64" width="272" height="384" rx="24" fill="#E63946"/>
+  <text x="136" y="184" font-family="Arial" font-size="96" fill="#FFF" font-weight="bold">PDF</text>
+  <path d="M200 320L264 360V328H336C352.091 328 366 341.909 366 358C366 374.091 352.091 388 336 388H264V420L200 380V320Z" fill="#4A90E2"/>
+  <circle cx="270" cy="360" r="8" fill="#FFF"/>
+  <circle cx="302" cy="360" r="8" fill="#FFF"/>
+  <circle cx="334" cy="360" r="8" fill="#FFF"/>
+</svg>

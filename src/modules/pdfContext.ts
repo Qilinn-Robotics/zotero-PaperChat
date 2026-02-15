@@ -5,6 +5,8 @@ export interface PDFContextOption {
   fullContextText?: string;
 }
 
+const MAX_EXCERPT_CHARS = 12000;
+
 function isPdfAttachment(item: any) {
   if (!item) return false;
   const contentType = item.attachmentContentType || item.attachmentMIMEType;
@@ -213,6 +215,16 @@ function normalizeExcerptText(text: string) {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function truncateExcerpt(text: string) {
+  if (text.length <= MAX_EXCERPT_CHARS) {
+    return { text, truncated: false };
+  }
+  return {
+    text: `${text.slice(0, MAX_EXCERPT_CHARS)}\n...[内容已截断]`,
+    truncated: true,
+  };
+}
+
 async function getPdfTextExcerpt(attachmentID: number) {
   const attachment = Zotero.Items.get(attachmentID) as any;
   if (!attachment) return "";
@@ -236,8 +248,12 @@ export async function getOptionContextText(option: PDFContextOption) {
   }
 
   const excerpt = await getPdfTextExcerpt(option.id);
+  const excerptResult = excerpt ? truncateExcerpt(excerpt) : null;
+  const excerptHeader = excerptResult?.truncated
+    ? "以下是该 PDF 的正文摘录（已截断以控制请求体大小）:"
+    : "以下是该 PDF 的正文摘录（可能为部分内容）:";
   const fullContextText = excerpt
-    ? `${option.metadataText}\n\n以下是该 PDF 的正文摘录（可能为部分内容）:\n${excerpt}`
+    ? `${option.metadataText}\n\n${excerptHeader}\n${excerptResult?.text || ""}`
     : `${option.metadataText}\n\n未读取到该 PDF 的全文索引内容（可能尚未被 Zotero 完成索引）。`;
 
   option.fullContextText = fullContextText;

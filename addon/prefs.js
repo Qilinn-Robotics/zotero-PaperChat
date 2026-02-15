@@ -7,3 +7,5 @@ pref(
   "systemPrompt",
   "You are a helpful assistant for reading and analysis.",
 );
+pref("conversationStore", "[]");
+pref("activeConversationId", "");

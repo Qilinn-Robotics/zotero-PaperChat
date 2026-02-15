@@ -12,6 +12,8 @@ declare namespace _ZoteroTypes {
       "modelName": string;
       "temperature": number;
       "systemPrompt": string;
+      "conversationStore": string;
+      "activeConversationId": string;
     };
   }
 }

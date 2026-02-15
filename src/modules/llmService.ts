@@ -18,13 +18,17 @@ interface CompletionResponse {
 
 export class LLMRequestError extends Error {
   status?: number;
+  code?: "timeout";
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, code?: "timeout") {
     super(message);
     this.name = "LLMRequestError";
     this.status = status;
+    this.code = code;
   }
 }
+
+const REQUEST_TIMEOUT_MS = 45000;
 
 export async function getCompletion(messages: ChatMessage[]): Promise<string> {
   const config = getActiveAIConfig();
@@ -37,7 +41,14 @@ export async function getCompletion(messages: ChatMessage[]): Promise<string> {
     throw new LLMRequestError("缺少 API Endpoint，请到设置页配置。", 400);
   }
 
-  const response = await fetch(config.apiEndpoint, {
+  const abortController =
+    typeof (globalThis as any).AbortController === "function"
+      ? new (globalThis as any).AbortController()
+      : null;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let response: Response;
+
+  const requestPromise = fetch(config.apiEndpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -48,7 +59,33 @@ export async function getCompletion(messages: ChatMessage[]): Promise<string> {
       messages,
       temperature: config.temperature,
     }),
+    ...(abortController ? { signal: abortController.signal } : {}),
   });
+
+  const timeoutPromise = new Promise<Response>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      if (abortController) {
+        abortController.abort();
+      }
+      reject(new LLMRequestError("请求超时，请稍后重试。", undefined, "timeout"));
+    }, REQUEST_TIMEOUT_MS);
+  });
+
+  try {
+    response = await Promise.race([requestPromise, timeoutPromise]);
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") {
+      throw new LLMRequestError("请求超时，请稍后重试。", undefined, "timeout");
+    }
+    if (error instanceof LLMRequestError && error.code === "timeout") {
+      throw error;
+    }
+    throw error;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;

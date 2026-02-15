@@ -3,10 +3,18 @@ import { renderMessageHTML } from "./messageRenderer";
 export interface ChatUIElements {
   root: HTMLDivElement;
   toolbox: HTMLDivElement;
+  conversationSelect: HTMLSelectElement;
+  newConversationButton: HTMLButtonElement;
+  renameConversationButton: HTMLButtonElement;
+  deleteConversationButton: HTMLButtonElement;
   contextToggle: HTMLInputElement;
+  selectionToggle: HTMLInputElement;
   searchInput: HTMLInputElement;
   pdfSelect: HTMLSelectElement;
+  addPdfButton: HTMLButtonElement;
+  removePdfButton: HTMLButtonElement;
   clearButton: HTMLButtonElement;
+  contextPreview: HTMLDivElement;
   chatContainer: HTMLDivElement;
   chatInput: HTMLTextAreaElement;
   sendButton: HTMLButtonElement;
@@ -15,6 +23,12 @@ export interface ChatUIElements {
 }
 
 type Role = "user" | "assistant" | "error";
+type ContextBadgeType = "pdf" | "selection" | "more";
+
+export interface ContextBadge {
+  type: ContextBadgeType;
+  label: string;
+}
 
 export function createChatInterface(parentElement: HTMLElement): ChatUIElements {
   const doc = parentElement.ownerDocument;
@@ -30,8 +44,35 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
 
   const toolboxRow1 = doc.createElement("div");
   toolboxRow1.className = "paperchat-toolbox-row";
-  const toolboxRow2 = doc.createElement("div");
-  toolboxRow2.className = "paperchat-toolbox-row";
+  const contextRow1 = doc.createElement("div");
+  contextRow1.className = "paperchat-toolbox-row";
+  const contextRow2 = doc.createElement("div");
+  contextRow2.className = "paperchat-toolbox-row";
+
+  const conversationLabel = doc.createElement("span");
+  conversationLabel.className = "paperchat-toolbox-label";
+  conversationLabel.textContent = "对话";
+
+  const conversationSelect = doc.createElement("select");
+  conversationSelect.className = "paperchat-conversation-select";
+  const initialConversationOption = doc.createElement("option");
+  initialConversationOption.value = "";
+  initialConversationOption.textContent = "新对话";
+  conversationSelect.appendChild(initialConversationOption);
+
+  const newConversationButton = doc.createElement("button");
+  newConversationButton.className = "paperchat-toolbox-btn paperchat-toolbox-btn-mini";
+  newConversationButton.textContent = "新建";
+
+  const renameConversationButton = doc.createElement("button");
+  renameConversationButton.className =
+    "paperchat-toolbox-btn paperchat-toolbox-btn-mini";
+  renameConversationButton.textContent = "重命名";
+
+  const deleteConversationButton = doc.createElement("button");
+  deleteConversationButton.className =
+    "paperchat-toolbox-btn paperchat-toolbox-btn-mini";
+  deleteConversationButton.textContent = "删除";
 
   const label = doc.createElement("span");
   label.className = "paperchat-toolbox-label";
@@ -45,6 +86,15 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
   const contextToggleText = doc.createElement("span");
   contextToggleText.textContent = "启用文献上下文";
   contextToggleWrap.append(contextToggle, contextToggleText);
+
+  const selectionToggleWrap = doc.createElement("label");
+  selectionToggleWrap.className = "paperchat-toggle-wrap";
+  const selectionToggle = doc.createElement("input");
+  selectionToggle.type = "checkbox";
+  selectionToggle.className = "paperchat-toggle";
+  const selectionToggleText = doc.createElement("span");
+  selectionToggleText.textContent = "选中内容";
+  selectionToggleWrap.append(selectionToggle, selectionToggleText);
 
   const searchInput = doc.createElement("input");
   searchInput.className = "paperchat-search-input";
@@ -62,20 +112,40 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
   clearButton.className = "paperchat-toolbox-btn";
   clearButton.textContent = "清空对话";
 
+  const addPdfButton = doc.createElement("button");
+  addPdfButton.className = "paperchat-toolbox-btn paperchat-toolbox-btn-mini";
+  addPdfButton.textContent = "加入";
+
+  const removePdfButton = doc.createElement("button");
+  removePdfButton.className = "paperchat-toolbox-btn paperchat-toolbox-btn-mini";
+  removePdfButton.textContent = "移除";
+
   const statusIndicator = doc.createElement("div");
   statusIndicator.className = "paperchat-connection";
   statusIndicator.textContent = "Ready";
 
-  toolboxRow1.append(label, contextToggleWrap, statusIndicator);
-  toolboxRow2.append(
-    searchInput,
-    pdfSelect,
-    clearButton,
+  toolboxRow1.append(
+    conversationLabel,
+    conversationSelect,
+    newConversationButton,
+    renameConversationButton,
+    deleteConversationButton,
+    statusIndicator,
   );
-  toolbox.append(toolboxRow1, toolboxRow2);
+  toolbox.append(toolboxRow1);
 
   const chatContainer = doc.createElement("div");
   chatContainer.className = "paperchat-messages";
+
+  const contextPanel = doc.createElement("div");
+  contextPanel.className = "paperchat-context-panel";
+  contextRow1.append(label, contextToggleWrap, selectionToggleWrap);
+  contextRow2.append(searchInput, pdfSelect, addPdfButton, removePdfButton, clearButton);
+  contextPanel.append(contextRow1, contextRow2);
+
+  const contextPreview = doc.createElement("div");
+  contextPreview.className = "paperchat-context-preview";
+  contextPreview.textContent = "尚未选择文献或文本。";
 
   const footer = doc.createElement("div");
   footer.className = "paperchat-composer";
@@ -95,22 +165,52 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
   sendButton.textContent = "发送";
 
   footer.append(thinkingIndicator, chatInput, sendButton);
-  root.append(toolbox, chatContainer, footer);
+  root.append(toolbox, chatContainer, contextPanel, contextPreview, footer);
   parentElement.appendChild(root);
 
   return {
     root,
     toolbox,
+    conversationSelect,
+    newConversationButton,
+    renameConversationButton,
+    deleteConversationButton,
     contextToggle,
+    selectionToggle,
     searchInput,
     pdfSelect,
+    addPdfButton,
+    removePdfButton,
     clearButton,
+    contextPreview,
     chatContainer,
     chatInput,
     sendButton,
     thinkingIndicator,
     statusIndicator,
   };
+}
+
+export function renderConversationOptions(
+  select: HTMLSelectElement,
+  options: { id: string; label: string }[],
+  selectedId: string | null,
+) {
+  const doc = select.ownerDocument;
+  if (!doc) return;
+
+  while (select.firstChild) {
+    select.removeChild(select.firstChild);
+  }
+
+  options.forEach((item) => {
+    const option = doc.createElement("option");
+    option.value = item.id;
+    option.textContent = item.label;
+    option.title = item.label;
+    option.selected = selectedId === item.id;
+    select.appendChild(option);
+  });
 }
 
 export function renderPdfOptions(
@@ -147,6 +247,48 @@ export function renderPdfOptions(
   });
 }
 
+export function renderContextBadges(preview: HTMLDivElement, badges: ContextBadge[]) {
+  const doc = preview.ownerDocument;
+  if (!doc) return;
+
+  while (preview.firstChild) {
+    preview.removeChild(preview.firstChild);
+  }
+
+  if (badges.length === 0) {
+    preview.textContent = "尚未添加 context。";
+    preview.classList.add("paperchat-context-preview-empty");
+    return;
+  }
+
+  preview.classList.remove("paperchat-context-preview-empty");
+
+  badges.forEach((badge) => {
+    const item = doc.createElement("div");
+    item.className = "paperchat-context-badge";
+
+    const text = doc.createElement("span");
+    text.className = "paperchat-context-badge-text";
+    text.textContent = badge.label;
+    text.title = badge.label;
+    if (badge.type === "more") {
+      item.classList.add("paperchat-context-badge-more");
+      item.append(text);
+    } else {
+      const icon = doc.createElement("img");
+      icon.className = "paperchat-context-badge-icon";
+      icon.alt = badge.type === "pdf" ? "PDF context" : "Selection context";
+      icon.src =
+        badge.type === "pdf"
+          ? `chrome://${addon.data.config.addonRef}/content/icons/context-pdf.svg`
+          : `chrome://${addon.data.config.addonRef}/content/icons/context-selection.svg`;
+      item.append(icon, text);
+    }
+
+    preview.appendChild(item);
+  });
+}
+
 export function addMessageToDisplay(
   container: HTMLDivElement,
   role: Role,
@@ -172,6 +314,42 @@ export function addMessageToDisplay(
   container.scrollTop = container.scrollHeight;
 }
 
+export async function addAssistantMessageWithTypewriter(
+  container: HTMLDivElement,
+  content: string,
+  options?: {
+    intervalMs?: number;
+    charsPerTick?: number;
+  },
+) {
+  const doc = container.ownerDocument;
+  if (!doc) return;
+
+  const row = doc.createElement("div");
+  row.className = "paperchat-row paperchat-row-assistant";
+
+  const bubble = doc.createElement("div");
+  bubble.className = "paperchat-bubble paperchat-bubble-assistant";
+  row.appendChild(bubble);
+  container.appendChild(row);
+
+  const text = content || "";
+  const intervalMs = Math.max(4, options?.intervalMs ?? 7);
+  const charsPerTick = Math.max(1, options?.charsPerTick ?? 2);
+
+  let cursor = 0;
+  while (cursor < text.length) {
+    cursor = Math.min(text.length, cursor + charsPerTick);
+    bubble.textContent = text.slice(0, cursor);
+    container.scrollTop = container.scrollHeight;
+    await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  bubble.classList.add("paperchat-markdown");
+  bubble.innerHTML = renderMessageHTML(text);
+  container.scrollTop = container.scrollHeight;
+}
+
 export function clearMessages(container: HTMLDivElement) {
   while (container.firstChild) {
     container.removeChild(container.firstChild);
@@ -185,6 +363,15 @@ export function updateInputState(
 ) {
   input.disabled = disabled;
   sendButton.disabled = disabled;
+}
+
+export function autoResizeInput(input: HTMLTextAreaElement) {
+  input.style.height = "auto";
+  const computed = input.ownerDocument?.defaultView?.getComputedStyle(input);
+  const maxHeight = Number.parseFloat(computed?.maxHeight || "180");
+  const targetHeight = Math.min(input.scrollHeight, Number.isFinite(maxHeight) ? maxHeight : 180);
+  input.style.height = `${targetHeight}px`;
+  input.style.overflowY = input.scrollHeight > targetHeight ? "auto" : "hidden";
 }
 
 export function showThinkingIndicator(indicator: HTMLDivElement, show: boolean) {

@@ -1,10 +1,13 @@
 import {
   addAssistantMessageWithTypewriter,
   autoResizeInput,
+  appendAssistantStreamChunk,
   ChatUIElements,
   addMessageToDisplay,
   clearMessages,
   ContextBadge,
+  createAssistantStreamMessage,
+  finalizeAssistantStreamMessage,
   renderContextBadges,
   renderConversationOptions,
   renderPdfOptions,
@@ -335,8 +338,24 @@ async function sendCurrentInput() {
   ];
 
   try {
-    const reply = await getCompletion(requestMessages);
-    await addAssistantMessageWithTypewriter(ui.chatContainer, reply);
+    let streamHandle: ReturnType<typeof createAssistantStreamMessage> = null;
+    const completion = await getCompletion(requestMessages, {
+      onToken: (token) => {
+        if (!streamHandle) {
+          streamHandle = createAssistantStreamMessage(ui.chatContainer);
+          setConnectionStatus(ui.statusIndicator, "Streaming");
+        }
+        if (!streamHandle) return;
+        appendAssistantStreamChunk(ui.chatContainer, streamHandle, token);
+      },
+    });
+    const reply = completion.content;
+
+    if (completion.streamed && streamHandle) {
+      finalizeAssistantStreamMessage(streamHandle, reply);
+    } else {
+      await addAssistantMessageWithTypewriter(ui.chatContainer, reply);
+    }
 
     if (currentConversation) {
       const updated = applyTurn(currentConversation, message, reply);

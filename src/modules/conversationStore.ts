@@ -14,6 +14,13 @@ export interface ChatConversation {
 const CONVERSATION_STORE_KEY = "conversationStore";
 const ACTIVE_CONVERSATION_ID_KEY = "activeConversationId";
 const MAX_STORED_CONVERSATIONS = 30;
+const STORAGE_RETRY_STRATEGIES = [
+  { maxMessagesPerConversation: 60, maxCharsPerMessage: 12000 },
+  { maxMessagesPerConversation: 36, maxCharsPerMessage: 8000 },
+  { maxMessagesPerConversation: 24, maxCharsPerMessage: 4000 },
+  { maxMessagesPerConversation: 12, maxCharsPerMessage: 2000 },
+  { maxMessagesPerConversation: 6, maxCharsPerMessage: 1000 },
+] as const;
 
 function isValidRole(role: unknown): role is ChatMessage["role"] {
   return role === "system" || role === "user" || role === "assistant";
@@ -96,6 +103,51 @@ function buildConversationTitle(firstUserInput: string) {
   return compact.length > 20 ? `${compact.slice(0, 20)}...` : compact;
 }
 
+function truncateMessageContent(content: string, maxChars: number) {
+  const normalized = content.trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  const suffix = "\n...[内容已截断以保存对话]";
+  const limit = Math.max(0, maxChars - suffix.length);
+  return `${normalized.slice(0, limit).trimEnd()}${suffix}`;
+}
+
+function compactConversationForStorage(
+  conversation: ChatConversation,
+  maxMessagesPerConversation: number,
+  maxCharsPerMessage: number,
+): ChatConversation {
+  const messages = conversation.messages
+    .slice(-maxMessagesPerConversation)
+    .map((message) => ({
+      ...message,
+      content: truncateMessageContent(message.content, maxCharsPerMessage),
+    }))
+    .filter((message) => message.content.length > 0);
+
+  return {
+    ...conversation,
+    messages,
+  };
+}
+
+function logStorageFallback(error: unknown, strategyIndex: number) {
+  const logger = (globalThis as any).Zotero?.debug;
+  if (typeof logger !== "function") return;
+
+  let detail = "unknown error";
+  if (error instanceof Error && error.message) {
+    detail = error.message;
+  } else if (typeof error === "string" && error) {
+    detail = error;
+  }
+
+  logger(
+    `[PaperChat] Conversation persistence retry ${strategyIndex + 1} failed: ${detail}`,
+  );
+}
+
 export function generateConversationID() {
   const suffix = Math.random().toString(36).slice(2, 8);
   return `${Date.now()}-${suffix}`;
@@ -128,8 +180,46 @@ export function persistConversations(conversations: ChatConversation[], activeID
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, MAX_STORED_CONVERSATIONS);
 
-  setPref(CONVERSATION_STORE_KEY, JSON.stringify(normalized));
-  setPref(ACTIVE_CONVERSATION_ID_KEY, activeID);
+  let lastError: unknown = null;
+
+  for (let index = 0; index < STORAGE_RETRY_STRATEGIES.length; index++) {
+    const strategy = STORAGE_RETRY_STRATEGIES[index];
+    const compacted = normalized.map((item) =>
+      compactConversationForStorage(
+        item,
+        strategy.maxMessagesPerConversation,
+        strategy.maxCharsPerMessage,
+      ),
+    );
+
+    try {
+      setPref(CONVERSATION_STORE_KEY, JSON.stringify(compacted));
+      setPref(ACTIVE_CONVERSATION_ID_KEY, activeID);
+      return;
+    } catch (error) {
+      lastError = error;
+      logStorageFallback(error, index);
+    }
+  }
+
+  const metadataOnly = normalized.map((item) => ({
+    ...item,
+    messages: [],
+  }));
+
+  try {
+    setPref(CONVERSATION_STORE_KEY, JSON.stringify(metadataOnly));
+    setPref(ACTIVE_CONVERSATION_ID_KEY, activeID);
+    const logger = (globalThis as any).Zotero?.debug;
+    if (typeof logger === "function") {
+      logger("[PaperChat] Conversation persistence fell back to metadata-only storage.");
+    }
+    return;
+  } catch (error) {
+    lastError = error;
+  }
+
+  throw lastError;
 }
 
 export function applyTurn(

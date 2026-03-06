@@ -25,6 +25,11 @@ export interface ChatUIElements {
 type Role = "user" | "assistant" | "error";
 type ContextBadgeType = "pdf" | "selection" | "more";
 
+export interface AssistantStreamHandle {
+  row: HTMLDivElement;
+  bubble: HTMLDivElement;
+}
+
 export interface ContextBadge {
   type: ContextBadgeType;
   label: string;
@@ -303,8 +308,7 @@ export function addMessageToDisplay(
   const bubble = doc.createElement("div");
   bubble.className = `paperchat-bubble paperchat-bubble-${role}`;
   if (role === "assistant") {
-    bubble.classList.add("paperchat-markdown");
-    bubble.innerHTML = renderMessageHTML(content);
+    finalizeAssistantStreamMessage({ row, bubble }, content);
   } else {
     bubble.textContent = content;
   }
@@ -312,6 +316,51 @@ export function addMessageToDisplay(
   row.appendChild(bubble);
   container.appendChild(row);
   container.scrollTop = container.scrollHeight;
+}
+
+function safelyRenderAssistantBubble(bubble: HTMLDivElement, content: string) {
+  try {
+    bubble.classList.add("paperchat-markdown");
+    bubble.innerHTML = renderMessageHTML(content);
+  } catch {
+    bubble.classList.remove("paperchat-markdown");
+    bubble.textContent = content;
+  }
+}
+
+export function createAssistantStreamMessage(
+  container: HTMLDivElement,
+): AssistantStreamHandle | null {
+  const doc = container.ownerDocument;
+  if (!doc) return null;
+
+  const row = doc.createElement("div");
+  row.className = "paperchat-row paperchat-row-assistant";
+
+  const bubble = doc.createElement("div");
+  bubble.className = "paperchat-bubble paperchat-bubble-assistant";
+  row.appendChild(bubble);
+  container.appendChild(row);
+  container.scrollTop = container.scrollHeight;
+
+  return { row, bubble };
+}
+
+export function appendAssistantStreamChunk(
+  container: HTMLDivElement,
+  handle: AssistantStreamHandle,
+  content: string,
+) {
+  handle.bubble.textContent = `${handle.bubble.textContent || ""}${content}`;
+  container.scrollTop = container.scrollHeight;
+}
+
+export function finalizeAssistantStreamMessage(
+  handle: AssistantStreamHandle,
+  content?: string,
+) {
+  const finalContent = content ?? handle.bubble.textContent ?? "";
+  safelyRenderAssistantBubble(handle.bubble, finalContent);
 }
 
 export async function addAssistantMessageWithTypewriter(
@@ -322,16 +371,8 @@ export async function addAssistantMessageWithTypewriter(
     charsPerTick?: number;
   },
 ) {
-  const doc = container.ownerDocument;
-  if (!doc) return;
-
-  const row = doc.createElement("div");
-  row.className = "paperchat-row paperchat-row-assistant";
-
-  const bubble = doc.createElement("div");
-  bubble.className = "paperchat-bubble paperchat-bubble-assistant";
-  row.appendChild(bubble);
-  container.appendChild(row);
+  const handle = createAssistantStreamMessage(container);
+  if (!handle) return;
 
   const text = content || "";
   const intervalMs = Math.max(4, options?.intervalMs ?? 7);
@@ -340,13 +381,12 @@ export async function addAssistantMessageWithTypewriter(
   let cursor = 0;
   while (cursor < text.length) {
     cursor = Math.min(text.length, cursor + charsPerTick);
-    bubble.textContent = text.slice(0, cursor);
+    handle.bubble.textContent = text.slice(0, cursor);
     container.scrollTop = container.scrollHeight;
     await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
   }
 
-  bubble.classList.add("paperchat-markdown");
-  bubble.innerHTML = renderMessageHTML(text);
+  finalizeAssistantStreamMessage(handle, text);
   container.scrollTop = container.scrollHeight;
 }
 

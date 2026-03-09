@@ -1,11 +1,13 @@
 import { ChatMessage } from "./llmService";
 import { getPref, setPref } from "../utils/prefs";
+import { PdfContextMode } from "./pdfContext";
 
 export interface ChatConversation {
   id: string;
   title: string;
   messages: ChatMessage[];
   contextPdfIds?: number[];
+  contextMode?: PdfContextMode;
   introShown?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -76,6 +78,7 @@ function normalizeConversation(raw: unknown): ChatConversation | null {
     title,
     messages: normalizeMessages(source.messages),
     contextPdfIds: normalizeContextPdfIds(source.contextPdfIds),
+    contextMode: source.contextMode === "full" ? "full" : "balanced",
     introShown: Boolean(source.introShown),
     createdAt,
     updatedAt,
@@ -160,6 +163,7 @@ export function createConversation(title = "新对话"): ChatConversation {
     title,
     messages: [],
     contextPdfIds: [],
+    contextMode: "balanced",
     introShown: false,
     createdAt: now,
     updatedAt: now,

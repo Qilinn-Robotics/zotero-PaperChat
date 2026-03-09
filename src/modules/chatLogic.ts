@@ -16,12 +16,18 @@ import {
   showThinkingIndicator,
   updateInputState,
 } from "./chatUI";
-import { ChatMessage, LLMRequestError, getCompletion } from "./llmService";
+import {
+  ChatMessage,
+  LLMRequestError,
+  getCompletion,
+} from "./llmService";
 import { getActiveAIConfig } from "../utils/prefs";
 import {
+  PDFContextBuildResult,
   PDFContextOption,
+  PdfContextMode,
   getDefaultPdfOptionId,
-  getOptionContextText,
+  getOptionContext,
   loadLibraryPdfOptions,
 } from "./pdfContext";
 import {
@@ -37,6 +43,7 @@ import {
   loadConversations,
   persistConversations,
 } from "./conversationStore";
+import { estimateMessagesInputTokens } from "./tokenEstimate";
 
 let currentUI: ChatUIElements | null = null;
 let isSending = false;
@@ -45,17 +52,28 @@ let focusedPdfId: number | null = null;
 let selectedPdfIds: number[] = [];
 let contextEnabled = false;
 let selectionContextEnabled = false;
+let contextMode: PdfContextMode = "balanced";
 let conversations: ChatConversation[] = [];
 let activeConversationId: string | null = null;
 let latestSelectionText = "";
 let selectionWatcherTimer: ReturnType<typeof setInterval> | null = null;
+let statusResetTimer: ReturnType<typeof setTimeout> | null = null;
+let estimatePreviewTimer: ReturnType<typeof setTimeout> | null = null;
+let estimatePreviewSeq = 0;
+let latestEstimatedTokens: number | null = null;
+let baseStatusText = "Ready";
 
 const MAX_CONTEXT_MESSAGES = 12;
 const MAX_SELECTED_PDFS = 5;
 const MAX_VISIBLE_PDF_BADGES = 3;
 const MAX_PDF_CONTEXT_CHARS_TOTAL = 24000;
 const MAX_PDF_CONTEXT_CHARS_EACH = 8000;
+const MAX_FULL_PDF_CONTEXT_CHARS_SINGLE = 120000;
 const MIN_PDF_CONTEXT_BODY_CHARS = 200;
+const TOKEN_WARNING_MEDIUM = 8000;
+const TOKEN_WARNING_HIGH = 16000;
+const TOKEN_WARNING_VERY_HIGH = 32000;
+const TOKEN_LIMIT = 48000;
 
 export async function initChat(ui: ChatUIElements, currentItem?: any) {
   currentUI = ui;
@@ -65,6 +83,7 @@ export async function initChat(ui: ChatUIElements, currentItem?: any) {
   selectedPdfIds = [];
   contextEnabled = false;
   selectionContextEnabled = false;
+  contextMode = "balanced";
   initializeConversationState();
   restoreContextPdfSelectionFromConversation();
 
@@ -81,13 +100,13 @@ export async function initChat(ui: ChatUIElements, currentItem?: any) {
 
   const config = getActiveAIConfig();
   if (!config.apiKey || !config.apiEndpoint) {
-    setConnectionStatus(ui.statusIndicator, "Config Missing");
+    setBaseStatus("Config Missing");
     showErrorMessage(
       ui.chatContainer,
       "请到 Zotero 设置页配置 API Key 和 Endpoint。\n配置后返回这里即可使用。",
     );
   } else {
-    setConnectionStatus(ui.statusIndicator, "Configured");
+    setBaseStatus("Configured");
   }
 
   await loadPdfContext(currentItem);
@@ -106,11 +125,14 @@ export function dispose() {
     currentUI.searchInput.oninput = null;
     currentUI.contextToggle.onchange = null;
     currentUI.selectionToggle.onchange = null;
+    currentUI.contextModeSelect.onchange = null;
     currentUI.pdfSelect.onchange = null;
     currentUI.addPdfButton.onclick = null;
     currentUI.removePdfButton.onclick = null;
   }
   stopSelectionWatcher();
+  stopStatusResetTimer();
+  stopEstimatePreviewTimer();
   disposeSelectionCapture();
 
   currentUI = null;
@@ -120,6 +142,7 @@ export function dispose() {
   selectedPdfIds = [];
   contextEnabled = false;
   selectionContextEnabled = false;
+  contextMode = "balanced";
   latestSelectionText = "";
   conversations = [];
   activeConversationId = null;
@@ -132,6 +155,7 @@ function bindUIEvents() {
   ui.sendButton.onclick = sendCurrentInput;
   ui.chatInput.oninput = () => {
     autoResizeInput(ui.chatInput);
+    scheduleEstimatePreview();
   };
   ui.chatInput.onkeydown = (event: Event) => {
     const keyboardEvent = event as KeyboardEvent;
@@ -161,6 +185,7 @@ function bindUIEvents() {
     renderActiveConversationMessages();
     refreshContextPreview();
     ui.chatInput.focus();
+    scheduleEstimatePreview();
   };
 
   ui.renameConversationButton.onclick = () => {
@@ -182,6 +207,7 @@ function bindUIEvents() {
     currentConversation.updatedAt = Date.now();
     persistConversationState();
     renderConversationSelector();
+    scheduleEstimatePreview();
   };
 
   ui.deleteConversationButton.onclick = () => {
@@ -200,6 +226,7 @@ function bindUIEvents() {
     renderConversationSelector();
     renderActiveConversationMessages();
     refreshContextPreview();
+    scheduleEstimatePreview();
   };
 
   ui.conversationSelect.onchange = () => {
@@ -211,11 +238,13 @@ function bindUIEvents() {
     renderConversationSelector();
     renderActiveConversationMessages();
     refreshContextPreview();
+    scheduleEstimatePreview();
   };
 
   ui.contextToggle.onchange = () => {
     contextEnabled = ui.contextToggle.checked;
     refreshContextPreview();
+    scheduleEstimatePreview();
   };
   ui.selectionToggle.onchange = () => {
     selectionContextEnabled = ui.selectionToggle.checked;
@@ -223,6 +252,13 @@ function bindUIEvents() {
       latestSelectionText = getActiveReaderSelectionText();
     }
     refreshContextPreview();
+    scheduleEstimatePreview();
+  };
+  ui.contextModeSelect.onchange = () => {
+    contextMode = ui.contextModeSelect.value === "full" ? "full" : "balanced";
+    persistActiveConversationContextMode();
+    refreshContextPreview();
+    scheduleEstimatePreview();
   };
 
   ui.searchInput.oninput = () => {
@@ -233,6 +269,7 @@ function bindUIEvents() {
     const value = Number(ui.pdfSelect.value || 0);
     focusedPdfId = Number.isFinite(value) && value > 0 ? value : null;
     refreshContextPreview();
+    scheduleEstimatePreview();
   };
 
   ui.addPdfButton.onclick = () => {
@@ -247,71 +284,99 @@ function bindUIEvents() {
   };
 }
 
-async function loadPdfContext(currentItem?: any) {
-  if (!currentUI) return;
-  const ui = currentUI;
-
-  try {
-    pdfOptions = await loadLibraryPdfOptions(currentItem);
-    focusedPdfId = getDefaultPdfOptionId(pdfOptions, currentItem);
-    reconcileSelectedPdfsWithOptions();
-    renderPdfList("");
-
-    if (focusedPdfId) {
-      setConnectionStatus(ui.statusIndicator, "PDF Linked");
-    }
-    refreshContextPreview();
-  } catch {
-    showErrorMessage(ui.chatContainer, "读取当前库 PDF 列表失败。请重试。");
+function stopStatusResetTimer() {
+  if (statusResetTimer) {
+    clearTimeout(statusResetTimer);
+    statusResetTimer = null;
   }
 }
 
-async function sendCurrentInput() {
-  if (!currentUI || isSending) return;
-  const ui = currentUI;
-
-  const message = ui.chatInput.value.trim();
-  if (!message) return;
-
-  const config = getActiveAIConfig();
-  if (!config.apiKey || !config.apiEndpoint) {
-    setConnectionStatus(ui.statusIndicator, "Config Missing");
-    showErrorMessage(ui.chatContainer, "缺少配置，请先在设置页填写 API 信息。");
-    return;
+function stopEstimatePreviewTimer() {
+  if (estimatePreviewTimer) {
+    clearTimeout(estimatePreviewTimer);
+    estimatePreviewTimer = null;
   }
+}
 
+function renderStatusIndicator() {
+  if (!currentUI) return;
+  const showEstimate =
+    !isSending &&
+    latestEstimatedTokens !== null &&
+    !["Config Missing", "Error", "Requesting", "Streaming"].includes(baseStatusText);
+  const estimateSuffix = showEstimate
+    ? ` · ${formatEstimatedTokenStatus(latestEstimatedTokens || 0)}`
+    : "";
+  const text = showEstimate
+    ? `${baseStatusText}${estimateSuffix}`
+    : baseStatusText;
+  setConnectionStatus(currentUI.statusIndicator, text);
+}
+
+function formatEstimatedTokenStatus(estimate: number) {
+  if (estimate >= TOKEN_LIMIT) {
+    return `Est ${estimate} tok [over limit]`;
+  }
+  if (estimate >= TOKEN_WARNING_VERY_HIGH) {
+    return `Est ${estimate} tok [very high]`;
+  }
+  if (estimate >= TOKEN_WARNING_HIGH) {
+    return `Est ${estimate} tok [high]`;
+  }
+  if (estimate >= TOKEN_WARNING_MEDIUM) {
+    return `Est ${estimate} tok [medium]`;
+  }
+  return `Est ${estimate} tok`;
+}
+
+function setBaseStatus(statusText: string) {
+  baseStatusText = statusText;
+  renderStatusIndicator();
+}
+
+function setTransientStatus(statusText: string, resetTo = "Configured", delayMs = 3000) {
+  if (!currentUI) return;
+  stopStatusResetTimer();
+  setConnectionStatus(currentUI.statusIndicator, statusText);
+  statusResetTimer = setTimeout(() => {
+    if (!currentUI) return;
+    baseStatusText = resetTo;
+    renderStatusIndicator();
+    statusResetTimer = null;
+  }, delayMs);
+}
+
+function logEstimatedInputTokens(
+  messages: ChatMessage[],
+  mode: PdfContextMode,
+  selectedPdfCount: number,
+) {
+  const estimate = estimateMessagesInputTokens(messages);
+  Zotero.debug(
+    `PaperChat: estimated input tokens ${estimate} (mode=${mode}, pdfs=${selectedPdfCount}, messages=${messages.length})`,
+  );
+  setTransientStatus(`Est. ${estimate} tok`, "Requesting", 2500);
+}
+
+async function buildDraftRequest(message: string) {
+  const config = getActiveAIConfig();
   let pdfContext = "";
   const selectedPdfOptions = getSelectedPdfOptionsInPriorityOrder();
+
   if (contextEnabled && selectedPdfOptions.length > 0) {
     const selectedIdsForPrompt = selectedPdfOptions.map((option) => option.id);
-    const multiContext = await buildMultiPdfContext(selectedIdsForPrompt, pdfOptions);
-    if (multiContext.invalidIds.length > 0) {
-      selectedPdfIds = selectedPdfIds.filter((id) => !multiContext.invalidIds.includes(id));
-      persistActiveConversationContextPdfIds();
-      refreshContextPreview();
-      addMessageToDisplay(
-        ui.chatContainer,
-        "error",
-        "部分已选文献不可用，已自动从 context 中移除。",
-      );
-    }
+    const multiContext = await buildMultiPdfContext(
+      selectedIdsForPrompt,
+      pdfOptions,
+      message,
+      contextMode,
+    );
     pdfContext = multiContext.text;
   }
-  if (selectionContextEnabled && !latestSelectionText) {
-    latestSelectionText = getActiveReaderSelectionText();
-  }
+
   const selectedContext = selectionContextEnabled
-    ? buildSelectionContextText(latestSelectionText)
+    ? buildSelectionContextText(latestSelectionText || getActiveReaderSelectionText())
     : "";
-
-  isSending = true;
-  updateInputState(ui.chatInput, ui.sendButton, true);
-  showThinkingIndicator(ui.thinkingIndicator, true);
-  setConnectionStatus(ui.statusIndicator, "Requesting");
-
-  ui.chatInput.value = "";
-  autoResizeInput(ui.chatInput);
-  addMessageToDisplay(ui.chatContainer, "user", message);
 
   const currentConversation = getActiveConversation();
   const historyMessages = currentConversation
@@ -320,7 +385,14 @@ async function sendCurrentInput() {
 
   const contextSections: string[] = [];
   if (pdfContext) {
-    contextSections.push(`以下是当前选择的多篇文献信息，请优先结合这些内容回答：\n${pdfContext}`);
+    contextSections.push(
+      [
+        "以下是当前选择的多篇文献信息，请优先结合这些内容回答。",
+        "你已经获得了这些 PDF 的题录信息与正文摘录。",
+        "不要声称自己无法访问本地 PDF 或无法看到原文；如果信息不足，只能说明当前提供的摘录不足。",
+        pdfContext,
+      ].join("\n"),
+    );
   } else {
     contextSections.push("当前未启用文献上下文，按通用学术助手方式回答。");
   }
@@ -337,13 +409,101 @@ async function sendCurrentInput() {
     { role: "user", content: message },
   ];
 
+  return {
+    requestMessages,
+    selectedPdfCount: selectedPdfOptions.length,
+  };
+}
+
+function scheduleEstimatePreview() {
+  if (!currentUI || isSending) return;
+  stopEstimatePreviewTimer();
+  estimatePreviewTimer = setTimeout(() => {
+    void refreshEstimatePreview();
+  }, 250);
+}
+
+async function refreshEstimatePreview() {
+  if (!currentUI || isSending) return;
+  const draft = currentUI.chatInput.value.trim();
+  if (!draft) {
+    latestEstimatedTokens = null;
+    renderStatusIndicator();
+    return;
+  }
+
+  const seq = ++estimatePreviewSeq;
+  try {
+    const { requestMessages } = await buildDraftRequest(draft);
+    if (seq !== estimatePreviewSeq || isSending) return;
+    latestEstimatedTokens = estimateMessagesInputTokens(requestMessages);
+    renderStatusIndicator();
+  } catch {
+    if (seq !== estimatePreviewSeq || isSending) return;
+    latestEstimatedTokens = null;
+    renderStatusIndicator();
+  }
+}
+
+async function loadPdfContext(currentItem?: any) {
+  if (!currentUI) return;
+  const ui = currentUI;
+
+  try {
+    pdfOptions = await loadLibraryPdfOptions(currentItem);
+    focusedPdfId = getDefaultPdfOptionId(pdfOptions, currentItem);
+    reconcileSelectedPdfsWithOptions();
+    renderPdfList("");
+
+    if (focusedPdfId) {
+      setBaseStatus("PDF Linked");
+    }
+    refreshContextPreview();
+    scheduleEstimatePreview();
+  } catch {
+    showErrorMessage(ui.chatContainer, "读取当前库 PDF 列表失败。请重试。");
+  }
+}
+
+async function sendCurrentInput() {
+  if (!currentUI || isSending) return;
+  const ui = currentUI;
+
+  const message = ui.chatInput.value.trim();
+  if (!message) return;
+
+  const config = getActiveAIConfig();
+  if (!config.apiKey || !config.apiEndpoint) {
+    setBaseStatus("Config Missing");
+    showErrorMessage(ui.chatContainer, "缺少配置，请先在设置页填写 API 信息。");
+    return;
+  }
+
+  isSending = true;
+  updateInputState(ui.chatInput, ui.sendButton, true);
+  showThinkingIndicator(ui.thinkingIndicator, true);
+  setBaseStatus("Requesting");
+
+  ui.chatInput.value = "";
+  autoResizeInput(ui.chatInput);
+  addMessageToDisplay(ui.chatContainer, "user", message);
+
+  if (selectionContextEnabled && !latestSelectionText) {
+    latestSelectionText = getActiveReaderSelectionText();
+  }
+
+  const selectedPdfOptions = getSelectedPdfOptionsInPriorityOrder();
+  const currentConversation = getActiveConversation();
+  const { requestMessages } = await buildDraftRequest(message);
+  logEstimatedInputTokens(requestMessages, contextMode, selectedPdfOptions.length);
+
   try {
     let streamHandle: ReturnType<typeof createAssistantStreamMessage> = null;
     const completion = await getCompletion(requestMessages, {
       onToken: (token) => {
         if (!streamHandle) {
           streamHandle = createAssistantStreamMessage(ui.chatContainer);
-          setConnectionStatus(ui.statusIndicator, "Streaming");
+          setBaseStatus("Streaming");
         }
         if (!streamHandle) return;
         appendAssistantStreamChunk(ui.chatContainer, streamHandle, token);
@@ -364,15 +524,16 @@ async function sendCurrentInput() {
       renderConversationSelector();
     }
 
-    setConnectionStatus(ui.statusIndicator, "Connected");
+    setBaseStatus("Connected");
   } catch (error) {
     showErrorMessage(ui.chatContainer, mapErrorToMessage(error));
-    setConnectionStatus(ui.statusIndicator, "Error");
+    setBaseStatus("Error");
   } finally {
     updateInputState(ui.chatInput, ui.sendButton, false);
     showThinkingIndicator(ui.thinkingIndicator, false);
     ui.chatInput.focus();
     isSending = false;
+    scheduleEstimatePreview();
   }
 }
 
@@ -472,6 +633,7 @@ function renderPdfList(query: string) {
     focusedPdfId,
   );
   refreshContextPreview();
+  scheduleEstimatePreview();
 }
 
 function stopSelectionWatcher() {
@@ -488,6 +650,7 @@ function startSelectionWatcher() {
     if (selected !== latestSelectionText) {
       latestSelectionText = selected;
       refreshContextPreview();
+      scheduleEstimatePreview();
     }
   }, 600);
 }
@@ -545,6 +708,7 @@ function addPdfToContext(pdfId: number) {
 
   persistActiveConversationContextPdfIds();
   refreshContextPreview();
+  scheduleEstimatePreview();
 
   if (overflowRemoved && currentUI) {
     addMessageToDisplay(
@@ -563,18 +727,31 @@ function removePdfFromContext(pdfId: number) {
   }
   persistActiveConversationContextPdfIds();
   refreshContextPreview();
+  scheduleEstimatePreview();
 }
 
 function restoreContextPdfSelectionFromConversation() {
   const currentConversation = getActiveConversation();
   const fromConversation = currentConversation?.contextPdfIds || [];
   selectedPdfIds = [...fromConversation];
+  contextMode = currentConversation?.contextMode === "full" ? "full" : "balanced";
+  if (currentUI) {
+    currentUI.contextModeSelect.value = contextMode;
+  }
+  scheduleEstimatePreview();
 }
 
 function persistActiveConversationContextPdfIds() {
   const currentConversation = getActiveConversation();
   if (!currentConversation) return;
   currentConversation.contextPdfIds = [...selectedPdfIds];
+  persistConversationState();
+}
+
+function persistActiveConversationContextMode() {
+  const currentConversation = getActiveConversation();
+  if (!currentConversation) return;
+  currentConversation.contextMode = contextMode;
   persistConversationState();
 }
 
@@ -589,7 +766,12 @@ function reconcileSelectedPdfsWithOptions() {
   persistActiveConversationContextPdfIds();
 }
 
-async function buildMultiPdfContext(selectedIds: number[], options: PDFContextOption[]) {
+async function buildMultiPdfContext(
+  selectedIds: number[],
+  options: PDFContextOption[],
+  query: string,
+  mode: PdfContextMode,
+) {
   const optionMap = new Map(options.map((option) => [option.id, option]));
   const invalidIds = selectedIds.filter((id) => !optionMap.has(id));
   const ordered = selectedIds
@@ -600,24 +782,32 @@ async function buildMultiPdfContext(selectedIds: number[], options: PDFContextOp
     return { text: "", invalidIds };
   }
 
+  const effectiveMode =
+    mode === "full" && ordered.length === 1 ? "full" : "balanced";
+  const perDocLimit =
+    effectiveMode === "full" ? MAX_FULL_PDF_CONTEXT_CHARS_SINGLE : MAX_PDF_CONTEXT_CHARS_EACH;
   const docs = await Promise.all(
     ordered.map(async (option, index) => ({
       index: index + 1,
       option,
-      context: truncateText(await getOptionContextText(option), MAX_PDF_CONTEXT_CHARS_EACH),
+      contextResult: await getOptionContext(option, query, effectiveMode, perDocLimit),
     })),
   );
 
   const sections: string[] = [];
   let used = 0;
   let compressed = false;
+  let warning = "";
 
   for (const doc of docs) {
     const sectionTitle = `文献${doc.index}（${doc.option.label}）`;
-    let sectionBody = doc.context;
+    let sectionBody = truncateText(doc.contextResult.text, perDocLimit);
     let sectionText = `${sectionTitle}\n${sectionBody}`;
 
-    if (sectionText.length + used <= MAX_PDF_CONTEXT_CHARS_TOTAL) {
+    const budgetLimit =
+      effectiveMode === "full" ? MAX_FULL_PDF_CONTEXT_CHARS_SINGLE : MAX_PDF_CONTEXT_CHARS_TOTAL;
+
+    if (sectionText.length + used <= budgetLimit) {
       sections.push(sectionText);
       used += sectionText.length;
       continue;
@@ -627,20 +817,27 @@ async function buildMultiPdfContext(selectedIds: number[], options: PDFContextOp
     sectionText = `${sectionTitle}\n${sectionBody}`;
     compressed = true;
 
-    if (sectionText.length + used <= MAX_PDF_CONTEXT_CHARS_TOTAL) {
+    if (sectionText.length + used <= budgetLimit) {
       sections.push(sectionText);
       used += sectionText.length;
       continue;
     }
 
-    const remaining = MAX_PDF_CONTEXT_CHARS_TOTAL - used;
+    const remaining = budgetLimit - used;
     if (remaining > 80) {
       const truncated = truncateText(sectionText, remaining - 20);
       sections.push(`${truncated}\n...[已截断]`);
-      used = MAX_PDF_CONTEXT_CHARS_TOTAL;
+      used = budgetLimit;
       compressed = true;
     }
     break;
+  }
+
+  if (mode === "full" && ordered.length > 1) {
+    warning = "Full PDF 模式仅对单篇文献生效；当前已自动回退为 Balanced。";
+  } else if (effectiveMode === "full" && docs[0]?.contextResult.truncated) {
+    warning =
+      `当前 PDF 全文约 ${docs[0].contextResult.sourceLength} 字符，已超过单轮预算，发送时做了截断。`;
   }
 
   const footer = compressed
@@ -650,6 +847,7 @@ async function buildMultiPdfContext(selectedIds: number[], options: PDFContextOp
   return {
     text: `${sections.join("\n\n")}${footer}`.trim(),
     invalidIds,
+    warning,
   };
 }
 

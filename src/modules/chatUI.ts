@@ -9,6 +9,7 @@ export interface ChatUIElements {
   deleteConversationButton: HTMLButtonElement;
   contextToggle: HTMLInputElement;
   selectionToggle: HTMLInputElement;
+  contextModeSelect: HTMLSelectElement;
   searchInput: HTMLInputElement;
   pdfSelect: HTMLSelectElement;
   addPdfButton: HTMLButtonElement;
@@ -87,6 +88,8 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
   contextRow1.className = "paperchat-toolbox-row";
   const contextRow2 = doc.createElement("div");
   contextRow2.className = "paperchat-toolbox-row";
+  const contextRow3 = doc.createElement("div");
+  contextRow3.className = "paperchat-toolbox-row";
 
   const conversationLabel = doc.createElement("span");
   conversationLabel.className = "paperchat-toolbox-label";
@@ -139,6 +142,22 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
   searchInput.className = "paperchat-search-input";
   searchInput.placeholder = "搜索文献...";
 
+  const contextModeLabel = doc.createElement("span");
+  contextModeLabel.className = "paperchat-toolbox-label";
+  contextModeLabel.textContent = "模式";
+
+  const contextModeSelect = doc.createElement("select");
+  contextModeSelect.className = "paperchat-context-select";
+  [
+    { value: "balanced", label: "Balanced" },
+    { value: "full", label: "Full PDF" },
+  ].forEach((item) => {
+    const option = doc.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    contextModeSelect.appendChild(option);
+  });
+
   const pdfSelect = doc.createElement("select");
   pdfSelect.className = "paperchat-context-select";
 
@@ -180,7 +199,8 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
   contextPanel.className = "paperchat-context-panel";
   contextRow1.append(label, contextToggleWrap, selectionToggleWrap);
   contextRow2.append(searchInput, pdfSelect, addPdfButton, removePdfButton, clearButton);
-  contextPanel.append(contextRow1, contextRow2);
+  contextRow3.append(contextModeLabel, contextModeSelect);
+  contextPanel.append(contextRow1, contextRow2, contextRow3);
 
   const contextPreview = doc.createElement("div");
   contextPreview.className = "paperchat-context-preview";
@@ -216,6 +236,7 @@ export function createChatInterface(parentElement: HTMLElement): ChatUIElements 
     deleteConversationButton,
     contextToggle,
     selectionToggle,
+    contextModeSelect,
     searchInput,
     pdfSelect,
     addPdfButton,

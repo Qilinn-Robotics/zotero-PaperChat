@@ -2,10 +2,157 @@ export interface PDFContextOption {
   id: number;
   label: string;
   metadataText: string;
+  fullText?: string;
   fullContextText?: string;
 }
 
+export type PdfContextMode = "balanced" | "full";
+
+export interface PDFContextBuildResult {
+  text: string;
+  sourceLength: number;
+  truncated: boolean;
+}
+
 const MAX_EXCERPT_CHARS = 12000;
+const FULLTEXT_RETRY_DELAYS_MS = [400, 1200, 2500];
+const FULLTEXT_CACHE_CANDIDATES = [
+  ".zotero-ft-cache",
+  ".zotero-ft-unprocessed",
+  ".zotero-ft-cache.json",
+];
+
+function debugPdfContext(message: string) {
+  Zotero.debug(`PaperChat PDF: ${message}`);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeSearchText(text: string) {
+  return text.toLowerCase();
+}
+
+function extractQueryTerms(query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return [];
+
+  const terms = new Set<string>();
+  for (const match of normalized.matchAll(/[\p{L}\p{N}][\p{L}\p{N} ._()/-]{1,30}/gu)) {
+    const term = match[0].trim();
+    if (term.length >= 2) {
+      terms.add(term);
+    }
+  }
+
+  const formulaMatch = normalized.match(/(?:公式|equation|eq\.?|formula)\s*\(?\s*(\d+)\s*\)?/i);
+  if (formulaMatch) {
+    const n = formulaMatch[1];
+    [
+      `公式${n}`,
+      `公式 ${n}`,
+      `equation ${n}`,
+      `equation (${n})`,
+      `eq ${n}`,
+      `eq. ${n}`,
+      `eq(${n})`,
+      `formula ${n}`,
+      `(${n})`,
+    ].forEach((term) => terms.add(term));
+  }
+
+  return [...terms].sort((a, b) => b.length - a.length);
+}
+
+function takeWindow(text: string, start: number, end: number) {
+  const safeStart = Math.max(0, start);
+  const safeEnd = Math.min(text.length, end);
+  return text.slice(safeStart, safeEnd).trim();
+}
+
+function buildFallbackExcerpt(text: string) {
+  if (text.length <= MAX_EXCERPT_CHARS) {
+    return text;
+  }
+
+  const segmentSize = Math.min(3200, Math.floor(MAX_EXCERPT_CHARS / 3));
+  const segments = [
+    takeWindow(text, 0, segmentSize),
+    takeWindow(
+      text,
+      Math.max(0, Math.floor(text.length / 2) - Math.floor(segmentSize / 2)),
+      Math.max(0, Math.floor(text.length / 2) + Math.floor(segmentSize / 2)),
+    ),
+    takeWindow(text, Math.max(0, text.length - segmentSize), text.length),
+  ].filter(Boolean);
+
+  return segments.join("\n\n...[中间内容省略]...\n\n");
+}
+
+function buildRelevantExcerpt(text: string, query: string) {
+  const terms = extractQueryTerms(query);
+  if (terms.length === 0) {
+    return buildFallbackExcerpt(text);
+  }
+
+  const normalizedText = normalizeSearchText(text);
+  const windows: Array<{ start: number; end: number; term: string; index: number }> = [];
+  const SNIPPET_RADIUS = 450;
+
+  for (const term of terms.slice(0, 8)) {
+    const index = normalizedText.indexOf(normalizeSearchText(term));
+    if (index === -1) continue;
+    windows.push({
+      start: Math.max(0, index - SNIPPET_RADIUS),
+      end: Math.min(text.length, index + term.length + SNIPPET_RADIUS),
+      term,
+      index,
+    });
+    if (windows.length >= 3) break;
+  }
+
+  if (windows.length === 0) {
+    return buildFallbackExcerpt(text);
+  }
+
+  windows.sort((a, b) => a.index - b.index);
+  const merged: Array<{ start: number; end: number; terms: string[] }> = [];
+  for (const window of windows) {
+    const last = merged[merged.length - 1];
+    if (last && window.start <= last.end + 120) {
+      last.end = Math.max(last.end, window.end);
+      last.terms.push(window.term);
+      continue;
+    }
+    merged.push({
+      start: window.start,
+      end: window.end,
+      terms: [window.term],
+    });
+  }
+
+  const sections = merged.map((window, idx) => {
+    const snippet = takeWindow(text, window.start, window.end);
+    const label = `片段${idx + 1}（匹配: ${[...new Set(window.terms)].join(", ")}）`;
+    return `${label}\n${snippet}`;
+  });
+
+  const joined = sections.join("\n\n...[相关片段切换]...\n\n");
+  return joined.length <= MAX_EXCERPT_CHARS
+    ? joined
+    : `${joined.slice(0, MAX_EXCERPT_CHARS).trimEnd()}\n...[内容已截断]`;
+}
+
+function buildFullPdfExcerpt(text: string, maxChars: number) {
+  if (text.length <= maxChars) {
+    return { text, truncated: false };
+  }
+  return {
+    text: `${text.slice(0, maxChars).trimEnd()}\n...[全文过长，已截断]`,
+    truncated: true,
+  };
+}
 
 function isPdfAttachment(item: any) {
   if (!item) return false;
@@ -151,7 +298,10 @@ export function getDefaultPdfOptionId(
 
 async function readFromFulltextAPI(attachmentID: number) {
   const fulltext = (Zotero as any).Fulltext || (Zotero as any).FullText;
-  if (!fulltext) return "";
+  if (!fulltext) {
+    debugPdfContext(`attachment ${attachmentID}: Zotero.Fulltext API unavailable`);
+    return "";
+  }
 
   const candidateMethods = [
     "getItemText",
@@ -160,6 +310,12 @@ async function readFromFulltextAPI(attachmentID: number) {
     "getUnsyncedContent",
   ];
 
+  debugPdfContext(
+    `attachment ${attachmentID}: probing Fulltext methods ${candidateMethods
+      .filter((name) => typeof fulltext?.[name] === "function")
+      .join(", ") || "(none)"}`,
+  );
+
   for (const methodName of candidateMethods) {
     const method = fulltext?.[methodName];
     if (typeof method !== "function") continue;
@@ -167,16 +323,28 @@ async function readFromFulltextAPI(attachmentID: number) {
     try {
       const result = await method.call(fulltext, attachmentID);
       if (typeof result === "string" && result.trim()) {
+        debugPdfContext(
+          `attachment ${attachmentID}: Fulltext.${methodName} returned ${result.length} chars`,
+        );
         return result;
       }
       if (result?.content && typeof result.content === "string") {
+        debugPdfContext(
+          `attachment ${attachmentID}: Fulltext.${methodName}.content returned ${result.content.length} chars`,
+        );
         return result.content;
       }
       if (result?.text && typeof result.text === "string") {
+        debugPdfContext(
+          `attachment ${attachmentID}: Fulltext.${methodName}.text returned ${result.text.length} chars`,
+        );
         return result.text;
       }
+      debugPdfContext(
+        `attachment ${attachmentID}: Fulltext.${methodName} returned empty result`,
+      );
     } catch {
-      // Try the next method.
+      debugPdfContext(`attachment ${attachmentID}: Fulltext.${methodName} threw`);
     }
   }
 
@@ -191,24 +359,89 @@ function getDirPath(filePath: string) {
 }
 
 async function readFromCacheFile(attachment: any) {
+  const fulltext = (Zotero as any).Fulltext || (Zotero as any).FullText;
+  const zoteroFile = (Zotero as any).File;
+
+  const helperCandidates = [
+    { name: "getItemCacheFile", helper: fulltext?.getItemCacheFile },
+    {
+      name: "getItemProcessorCacheFile",
+      helper: fulltext?.getItemProcessorCacheFile,
+    },
+  ];
+
+  if (zoteroFile?.getContentsAsync) {
+    for (const { name, helper } of helperCandidates) {
+      if (typeof helper !== "function") continue;
+      try {
+        const file = await helper.call(fulltext, attachment);
+        const path = file?.path;
+        if (!path) {
+          debugPdfContext(
+            `attachment ${attachment?.id || "unknown"}: ${name} returned no path`,
+          );
+          continue;
+        }
+        const text = await zoteroFile.getContentsAsync(path);
+        if (typeof text === "string" && text.trim()) {
+          debugPdfContext(
+            `attachment ${attachment?.id || "unknown"}: read ${text.length} chars via ${name}`,
+          );
+          return text;
+        }
+        debugPdfContext(
+          `attachment ${attachment?.id || "unknown"}: ${name} file is empty`,
+        );
+      } catch (error) {
+        debugPdfContext(
+          `attachment ${attachment?.id || "unknown"}: ${name} failed: ${String(error)}`,
+        );
+      }
+    }
+  }
+
   const filePath = await attachment?.getFilePathAsync?.();
-  if (!filePath) return "";
-
-  const dirPath = getDirPath(String(filePath));
-  if (!dirPath) return "";
-
-  const cachePath = `${dirPath}/.zotero-ft-cache`;
-  const ioUtils = (globalThis as any).IOUtils;
-  if (!ioUtils?.exists || !ioUtils?.readUTF8) return "";
-
-  try {
-    const exists = await ioUtils.exists(cachePath);
-    if (!exists) return "";
-    const text = await ioUtils.readUTF8(cachePath);
-    return typeof text === "string" ? text : "";
-  } catch {
+  if (!filePath) {
+    debugPdfContext(`attachment ${attachment?.id || "unknown"}: missing file path`);
     return "";
   }
+
+  const dirPath = getDirPath(String(filePath));
+  if (!dirPath) {
+    debugPdfContext(`attachment ${attachment?.id || "unknown"}: invalid parent dir`);
+    return "";
+  }
+
+  const ioUtils = (globalThis as any).IOUtils;
+  if (!ioUtils?.exists || !ioUtils?.readUTF8) {
+    debugPdfContext(`attachment ${attachment?.id || "unknown"}: IOUtils unavailable`);
+    return "";
+  }
+
+  for (const cacheFile of FULLTEXT_CACHE_CANDIDATES) {
+    const cachePath = `${dirPath}/${cacheFile}`;
+    try {
+      const exists = await ioUtils.exists(cachePath);
+      if (!exists) continue;
+      const text = await ioUtils.readUTF8(cachePath);
+      if (typeof text === "string" && text.trim()) {
+        debugPdfContext(
+          `attachment ${attachment?.id || "unknown"}: read ${text.length} chars from ${cacheFile}`,
+        );
+        return text;
+      }
+      debugPdfContext(
+        `attachment ${attachment?.id || "unknown"}: ${cacheFile} exists but is empty`,
+      );
+    } catch (error) {
+      debugPdfContext(
+        `attachment ${attachment?.id || "unknown"}: failed to read ${cacheFile}: ${String(error)}`,
+      );
+    }
+  }
+
+  debugPdfContext(`attachment ${attachment?.id || "unknown"}: no fulltext cache file found`);
+  return "";
 }
 
 function normalizeExcerptText(text: string) {
@@ -227,35 +460,85 @@ function truncateExcerpt(text: string) {
 
 async function getPdfTextExcerpt(attachmentID: number) {
   const attachment = Zotero.Items.get(attachmentID) as any;
-  if (!attachment) return "";
-
-  const fromApi = await readFromFulltextAPI(attachmentID);
-  if (fromApi.trim()) {
-    return normalizeExcerptText(fromApi);
+  if (!attachment) {
+    debugPdfContext(`attachment ${attachmentID}: item not found`);
+    return "";
   }
 
-  const fromCache = await readFromCacheFile(attachment);
-  if (fromCache.trim()) {
-    return normalizeExcerptText(fromCache);
+  for (let attempt = 0; attempt <= FULLTEXT_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      const delayMs = FULLTEXT_RETRY_DELAYS_MS[attempt - 1];
+      debugPdfContext(
+        `attachment ${attachmentID}: retrying fulltext read after ${delayMs}ms`,
+      );
+      await delay(delayMs);
+    }
+
+    const fromApi = await readFromFulltextAPI(attachmentID);
+    if (fromApi.trim()) {
+      debugPdfContext(`attachment ${attachmentID}: using Fulltext API result`);
+      return normalizeExcerptText(fromApi);
+    }
+
+    const fromCache = await readFromCacheFile(attachment);
+    if (fromCache.trim()) {
+      debugPdfContext(`attachment ${attachmentID}: using cache file result`);
+      return normalizeExcerptText(fromCache);
+    }
   }
 
+  debugPdfContext(`attachment ${attachmentID}: no indexed PDF text available`);
   return "";
 }
 
-export async function getOptionContextText(option: PDFContextOption) {
-  if (option.fullContextText) {
-    return option.fullContextText;
+async function getCachedFullText(option: PDFContextOption) {
+  if (option.fullText) {
+    return option.fullText;
   }
 
   const excerpt = await getPdfTextExcerpt(option.id);
-  const excerptResult = excerpt ? truncateExcerpt(excerpt) : null;
-  const excerptHeader = excerptResult?.truncated
-    ? "以下是该 PDF 的正文摘录（已截断以控制请求体大小）:"
-    : "以下是该 PDF 的正文摘录（可能为部分内容）:";
-  const fullContextText = excerpt
-    ? `${option.metadataText}\n\n${excerptHeader}\n${excerptResult?.text || ""}`
-    : `${option.metadataText}\n\n未读取到该 PDF 的全文索引内容（可能尚未被 Zotero 完成索引）。`;
+  option.fullText = excerpt;
+  return excerpt;
+}
 
-  option.fullContextText = fullContextText;
-  return fullContextText;
+export async function getOptionContextText(option: PDFContextOption, query = "") {
+  return getOptionContext(option, query, "balanced", MAX_EXCERPT_CHARS);
+}
+
+export async function getOptionContext(
+  option: PDFContextOption,
+  query: string,
+  mode: PdfContextMode,
+  maxChars: number,
+): Promise<PDFContextBuildResult> {
+  const fullText = await getCachedFullText(option);
+  if (!fullText) {
+    return {
+      text: `${option.metadataText}\n\n未读取到该 PDF 的全文索引内容（可能尚未被 Zotero 完成索引）。`,
+      sourceLength: 0,
+      truncated: false,
+    };
+  }
+
+  if (mode === "full") {
+    const fullResult = buildFullPdfExcerpt(fullText, maxChars);
+    return {
+      text: `${option.metadataText}\n\n以下是该 PDF 的全文文本${fullResult.truncated ? "（已截断）" : ""}:\n${fullResult.text}`,
+      sourceLength: fullText.length,
+      truncated: fullResult.truncated,
+    };
+  }
+
+  const excerpt = query ? buildRelevantExcerpt(fullText, query) : buildFallbackExcerpt(fullText);
+  const excerptResult = truncateExcerpt(excerpt);
+  const excerptHeader = query
+    ? "以下是该 PDF 中与当前问题最相关的正文片段（已按提问检索并截断）:"
+    : excerptResult.truncated
+      ? "以下是该 PDF 的正文摘录（已截断以控制请求体大小）:"
+      : "以下是该 PDF 的正文摘录（可能为部分内容）:";
+  return {
+    text: `${option.metadataText}\n\n${excerptHeader}\n${excerptResult.text}`,
+    sourceLength: fullText.length,
+    truncated: excerptResult.truncated,
+  };
 }

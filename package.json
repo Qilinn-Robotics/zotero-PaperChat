@@ -1,7 +1,7 @@
 {
   "name": "zotero-paperchat",
   "type": "module",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "author": "qilinli",
   "description": "PaperChat: a clean AI sidebar for Zotero.",
   "homepage": "https://github.com/qilinli/zotero-PaperChat",

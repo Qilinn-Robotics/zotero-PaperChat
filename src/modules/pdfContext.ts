@@ -154,6 +154,81 @@ function buildFullPdfExcerpt(text: string, maxChars: number) {
   };
 }
 
+function stripReferenceSection(text: string) {
+  if (!text) {
+    return { text, removed: false };
+  }
+
+  const patterns = [
+    { pattern: /\backnowledg(?:e)?ments?\b/gi, kind: "tail-section" },
+    { pattern: /\bappendix references?\b/gi, kind: "tail-section" },
+    { pattern: /\bappendix bibliography\b/gi, kind: "tail-section" },
+    { pattern: /\breferences?\b/gi, kind: "reference-section" },
+    { pattern: /\bbibliography\b/gi, kind: "reference-section" },
+    { pattern: /\bworks cited\b/gi, kind: "reference-section" },
+    { pattern: /\bliterature cited\b/gi, kind: "reference-section" },
+    { pattern: /\breferences? and notes\b/gi, kind: "reference-section" },
+    { pattern: /致谢/gu, kind: "tail-section" },
+    { pattern: /参考文献/gu, kind: "reference-section" },
+    { pattern: /附录参考文献/gu, kind: "tail-section" },
+  ];
+
+  const minStart = Math.floor(text.length * 0.55);
+  let candidateIndex = -1;
+  let candidateKind = "";
+
+  for (const { pattern, kind } of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const index = match.index ?? -1;
+      if (index < minStart) {
+        continue;
+      }
+      if (candidateIndex === -1 || index < candidateIndex) {
+        candidateIndex = index;
+        candidateKind = kind;
+      }
+    }
+  }
+
+  if (candidateIndex === -1) {
+    return { text, removed: false };
+  }
+
+  const tail = text.slice(candidateIndex).trim();
+  if (tail.length < 1200) {
+    return { text, removed: false };
+  }
+
+  const yearMatches = tail.match(/\b(?:19|20)\d{2}[a-z]?\b/g) || [];
+  const bracketCitationMatches = tail.match(/\[\d{1,3}\]/g) || [];
+  const numberedCitationMatches =
+    tail.match(/(?:^|\s)\d{1,3}\.\s+[A-Z\u00c0-\u024f]/g) || [];
+  const tailHeadingMatches =
+    tail.match(
+      /\b(?:acknowledg(?:e)?ments?|appendix references?|appendix bibliography|references?|bibliography|works cited|literature cited)\b/gi,
+    ) || [];
+
+  const looksLikeReferenceTail =
+    yearMatches.length >= 8 ||
+    bracketCitationMatches.length >= 8 ||
+    numberedCitationMatches.length >= 8;
+  const looksLikeTailSection =
+    tailHeadingMatches.length >= 2 || tail.length >= 3000;
+
+  if (candidateKind === "reference-section" && !looksLikeReferenceTail) {
+    return { text, removed: false };
+  }
+
+  if (candidateKind === "tail-section" && !looksLikeReferenceTail && !looksLikeTailSection) {
+    return { text, removed: false };
+  }
+
+  return {
+    text: text.slice(0, candidateIndex).trimEnd(),
+    removed: true,
+  };
+}
+
 function isPdfAttachment(item: any) {
   if (!item) return false;
   const contentType = item.attachmentContentType || item.attachmentMIMEType;
@@ -521,10 +596,14 @@ export async function getOptionContext(
   }
 
   if (mode === "full") {
-    const fullResult = buildFullPdfExcerpt(fullText, maxChars);
+    const cleanedFullText = stripReferenceSection(fullText);
+    const fullResult = buildFullPdfExcerpt(cleanedFullText.text, maxChars);
+    const fullHeader = cleanedFullText.removed
+      ? "以下是该 PDF 的全文文本（已自动排除参考文献部分）"
+      : "以下是该 PDF 的全文文本";
     return {
-      text: `${option.metadataText}\n\n以下是该 PDF 的全文文本${fullResult.truncated ? "（已截断）" : ""}:\n${fullResult.text}`,
-      sourceLength: fullText.length,
+      text: `${option.metadataText}\n\n${fullHeader}${fullResult.truncated ? "（已截断）" : ""}:\n${fullResult.text}`,
+      sourceLength: cleanedFullText.text.length,
       truncated: fullResult.truncated,
     };
   }

@@ -29,7 +29,7 @@ export function registerPrefsScripts(win: Window) {
     (getPref("apiEndpoint") as string) ||
     "https://api.openai.com/v1/chat/completions";
   modelInput.value = (getPref("modelName") as string) || "gpt-4o-mini";
-  tempInput.value = String((getPref("temperature") as number) ?? 0.7);
+  tempInput.value = String((getPref("temperature") as number) ?? 1);
   promptInput.value =
     (getPref("systemPrompt") as string) ||
     "You are a helpful assistant for reading and analysis.";

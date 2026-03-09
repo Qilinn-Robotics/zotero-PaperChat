@@ -1,4 +1,4 @@
-import { renderMessageHTML } from "./messageRenderer";
+import { renderBasicMarkdownHTML, renderMessageHTML } from "./messageRenderer";
 
 export interface ChatUIElements {
   root: HTMLDivElement;
@@ -33,6 +33,40 @@ export interface AssistantStreamHandle {
 export interface ContextBadge {
   type: ContextBadgeType;
   label: string;
+}
+
+function summarizeRenderContent(content: string) {
+  return content.replace(/\s+/g, " ").slice(0, 160);
+}
+
+function setBubbleHTML(bubble: HTMLDivElement, html: string) {
+  const doc = bubble.ownerDocument;
+  if (!doc) {
+    throw new Error("PaperChat: bubble document is unavailable.");
+  }
+
+  while (bubble.firstChild) {
+    bubble.removeChild(bubble.firstChild);
+  }
+
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(`<body>${html}</body>`, "text/html");
+  const parseError = parsed.querySelector("parsererror");
+  if (parseError) {
+    throw new Error(`PaperChat: HTML fragment parse error: ${parseError.textContent || "unknown"}`);
+  }
+
+  const body = parsed.body;
+  if (!body) {
+    throw new Error("PaperChat: parsed HTML fragment has no body.");
+  }
+
+  const nodes = Array.from(body.childNodes);
+  for (const node of nodes) {
+    if (node) {
+      bubble.appendChild(doc.importNode(node, true));
+    }
+  }
 }
 
 export function createChatInterface(parentElement: HTMLElement): ChatUIElements {
@@ -321,10 +355,21 @@ export function addMessageToDisplay(
 function safelyRenderAssistantBubble(bubble: HTMLDivElement, content: string) {
   try {
     bubble.classList.add("paperchat-markdown");
-    bubble.innerHTML = renderMessageHTML(content);
-  } catch {
-    bubble.classList.remove("paperchat-markdown");
-    bubble.textContent = content;
+    setBubbleHTML(bubble, renderMessageHTML(content));
+  } catch (error) {
+    try {
+      bubble.classList.add("paperchat-markdown");
+      setBubbleHTML(bubble, renderBasicMarkdownHTML(content));
+      Zotero.debug(
+        `PaperChat: outer render fallback [full->basic] ${String(error)} | preview=${summarizeRenderContent(content)}`,
+      );
+    } catch (fallbackError) {
+      bubble.classList.remove("paperchat-markdown");
+      bubble.textContent = content;
+      Zotero.debug(
+        `PaperChat: outer render fallback [basic->text] ${String(error)} / ${String(fallbackError)} | preview=${summarizeRenderContent(content)}`,
+      );
+    }
   }
 }
 

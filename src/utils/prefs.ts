@@ -31,7 +31,7 @@ export function getActiveAIConfig(): ActiveAIConfig {
   const rawTemp = Number(getPref("temperature"));
   const temperature = Number.isFinite(rawTemp)
     ? Math.min(2, Math.max(0, rawTemp))
-    : 0.7;
+    : 1;
 
   return {
     apiKey: (getPref("apiKey") || "").trim(),
